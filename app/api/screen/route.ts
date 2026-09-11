@@ -10,11 +10,10 @@ import { buildDemoAnalysis, sha256, validateUpload } from '@/lib/screening'
 export const runtime = 'nodejs'
 
 /**
- * Hosted PostgreSQL databases can retain a legacy FK such as
- * documents.owner_id -> users.id from an older auth schema. TrustX auth now
- * uses trustx_auth_users, so that legacy FK makes an otherwise valid upload
- * fail with a misleading Drizzle "Failed query" message. Remove only those
- * legacy FKs; do not remove unrelated constraints.
+ * The current TrustX auth identity is stored in trustx_auth_users, while some
+ * hosted databases may still have foreign keys left over from an older schema.
+ * Screening ownership is enforced by the authenticated session, so these
+ * legacy FK constraints must not block a valid upload.
  */
 async function ensureScreeningStorageCompatibility() {
   await db.execute(sql`
@@ -29,15 +28,12 @@ async function ensureScreeningStorageCompatibility() {
         from pg_constraint con
         join pg_class c on c.oid = con.conrelid
         join pg_namespace n on n.oid = c.relnamespace
-        join pg_class parent on parent.oid = con.confrelid
-        join pg_namespace parent_ns on parent_ns.oid = parent.relnamespace
         join unnest(con.conkey) as k(attnum) on true
         join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
         where con.contype = 'f'
           and n.nspname not in ('pg_catalog', 'information_schema')
           and c.relname in ('documents', 'screenings', 'reviews', 'audit_logs', 'refresh_tokens')
           and a.attname in ('owner_id', 'requested_by', 'reviewer_id', 'user_id')
-          and parent.relname in ('users', 'trustx_demo_users')
       loop
         execute format(
           'alter table %I.%I drop constraint if exists %I',
@@ -115,13 +111,12 @@ export async function POST(request: NextRequest) {
     const err = error as { message?: string; code?: string; detail?: string; constraint?: string }
     const message = err?.message || 'Unable to process document.'
     const status = message === 'Authentication required.' ? 401 : 400
-    // Keep the client message useful without exposing SQL text, connection
-    // strings, query parameters, or uploaded document contents.
+    const dbInfo = err?.code ? ` Database code: ${err.code}${err.constraint ? `, constraint: ${err.constraint}` : ''}.` : ''
     const safeMessage = status === 401
       ? message
       : process.env.NODE_ENV === 'development'
-        ? `${message}${err.code ? ` [${err.code}]` : ''}${err.constraint ? ` (${err.constraint})` : ''}`
-        : 'Unable to process document. Please retry; if it persists, check the TrustX server logs.'
+        ? `${message}${dbInfo}`
+        : `Unable to process document.${dbInfo} Please retry.`
     console.error('TrustX screening error:', { code: err.code, message: err.message, detail: err.detail, constraint: err.constraint })
     return NextResponse.json({ success:false, error:{ code:status === 401 ? 'UNAUTHORIZED' : 'SCREENING_FAILED', message: safeMessage } }, { status })
   }
