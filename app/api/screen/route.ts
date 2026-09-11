@@ -1,53 +1,64 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
-import { auditLogs, documents, forensicResults, ocrResults, riskFactors, screenings, validationResults } from '@/lib/db/schema'
+import { auditLogs, documents, forensicResults, ocrResults, riskFactors, screenings, users, validationResults } from '@/lib/db/schema'
 import { calculateRisk } from '@/lib/risk-engine'
 import { buildDemoAnalysis, sha256, validateUpload } from '@/lib/screening'
 
 export const runtime = 'nodejs'
 const DEMO_OWNER_ID = '00000000-0000-0000-0000-000000000001'
+const DEMO_OWNER_EMAIL = 'demo@trustx.local'
+
+async function ensureDemoOwner() {
+  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.id, DEMO_OWNER_ID)).limit(1)
+  if (existing) return existing.id
+
+  const [byEmail] = await db.select({ id: users.id }).from(users).where(eq(users.email, DEMO_OWNER_EMAIL)).limit(1)
+  if (byEmail) return byEmail.id
+
+  try {
+    const [created] = await db.insert(users).values({
+      id: DEMO_OWNER_ID,
+      fullName: 'TrustX Demo User',
+      email: DEMO_OWNER_EMAIL,
+      passwordHash: 'demo-account-not-for-authentication',
+      role: 'ADMIN',
+      isActive: true,
+    }).returning({ id: users.id })
+    return created.id
+  } catch {
+    const [raceSafe] = await db.select({ id: users.id }).from(users).where(eq(users.email, DEMO_OWNER_EMAIL)).limit(1)
+    if (!raceSafe) throw new Error('Unable to initialize the TrustX demo user.')
+    return raceSafe.id
+  }
+}
 
 async function runAIService(input: { screeningId: string; filename: string; mimeType: string; bytes: Buffer }) {
   const url = process.env.AI_SERVICE_URL
   if (!url) return null
-
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
   try {
     const response = await fetch(`${url.replace(/\/$/, '')}/analyze`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        screening_id: input.screeningId,
-        filename: input.filename,
-        mime_type: input.mimeType,
-        content_base64: input.bytes.toString('base64'),
-      }),
-      signal: controller.signal,
-      cache: 'no-store',
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ screening_id: input.screeningId, filename: input.filename, mime_type: input.mimeType, content_base64: input.bytes.toString('base64') }),
+      signal: controller.signal, cache: 'no-store',
     })
     if (!response.ok) return null
     const result = await response.json()
     return result?.success ? result : null
-  } catch {
-    return null
-  } finally {
-    clearTimeout(timeout)
-  }
+  } catch { return null } finally { clearTimeout(timeout) }
 }
 
 export async function POST(request: NextRequest) {
   try {
     const form = await request.formData()
     const file = form.get('file')
-    const requestedOwnerId = String(form.get('ownerId') || '')
-    const ownerId = /^[0-9a-f-]{36}$/i.test(requestedOwnerId) ? requestedOwnerId : DEMO_OWNER_ID
-    const documentType = String(form.get('documentType') || 'IDENTITY_DOCUMENT')
-
     if (!(file instanceof File)) return NextResponse.json({ success: false, error: { code: 'FILE_REQUIRED', message: 'A document file is required.' } }, { status: 400 })
     validateUpload(file)
 
+    const ownerId = await ensureDemoOwner()
+    const documentType = String(form.get('documentType') || 'IDENTITY_DOCUMENT')
     const bytes = Buffer.from(await file.arrayBuffer())
     const hash = sha256(bytes)
     const storedFilename = `${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
@@ -64,27 +75,11 @@ export async function POST(request: NextRequest) {
     let analysisMode = 'DEMO_FALLBACK'
 
     if (ai?.ocr && ai?.forensics && ai?.validation) {
-      ocrConfidence = Number(ai.ocr.confidence)
-      forensic = ai.forensics
-      validation = ai.validation
-      const calculated = calculateRisk({
-        tamperingProbability: Number(forensic.tampering_probability),
-        compressionAnomaly: Number(forensic.compression_anomaly),
-        copyMoveProbability: Number(forensic.copy_move_probability),
-        noiseInconsistency: Number(forensic.noise_inconsistency),
-        metadataAnomaly: Number(forensic.metadata_anomaly),
-        ocrConfidence,
-        formatScore: Number(validation.format_score),
-        structureScore: Number(validation.structure_score),
-        fieldConsistencyScore: Number(validation.field_consistency_score),
-        qrConsistencyScore: Number(validation.qr_consistency_score),
-        dateConsistencyScore: Number(validation.date_consistency_score),
-      })
-      analysis = calculated
+      ocrConfidence = Number(ai.ocr.confidence); forensic = ai.forensics; validation = ai.validation
+      analysis = calculateRisk({ tamperingProbability: Number(forensic.tampering_probability), compressionAnomaly: Number(forensic.compression_anomaly), copyMoveProbability: Number(forensic.copy_move_probability), noiseInconsistency: Number(forensic.noise_inconsistency), metadataAnomaly: Number(forensic.metadata_anomaly), ocrConfidence, formatScore: Number(validation.format_score), structureScore: Number(validation.structure_score), fieldConsistencyScore: Number(validation.field_consistency_score), qrConsistencyScore: Number(validation.qr_consistency_score), dateConsistencyScore: Number(validation.date_consistency_score) })
       analysisMode = 'PYTHON_AI_SERVICE'
     } else {
-      analysis = buildDemoAnalysis(parseInt(hash.slice(0, 8), 16))
-      ocrConfidence = analysis.level === 'CRITICAL' ? 0.71 : analysis.level === 'HIGH' ? 0.84 : 0.96
+      analysis = buildDemoAnalysis(parseInt(hash.slice(0, 8), 16)); ocrConfidence = analysis.level === 'CRITICAL' ? 0.71 : analysis.level === 'HIGH' ? 0.84 : 0.96
       forensic = { tampering_probability: 0.02, compression_anomaly: 0.08, copy_move_probability: 0.04, noise_inconsistency: 0.06, metadata_anomaly: 0.05 }
       validation = { format_score: 94, structure_score: 92, field_consistency_score: 94, qr_consistency_score: 91, date_consistency_score: 96 }
     }
