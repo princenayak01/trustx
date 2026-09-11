@@ -1,5 +1,5 @@
-import TrustXApp from '@/components/trustx-app'
+import TrustXV2 from '@/components/trustx-v2'
 
 export default function Page() {
-  return <TrustXApp />
+  return <TrustXV2 />
 }
