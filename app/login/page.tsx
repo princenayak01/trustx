@@ -1,13 +1,12 @@
 'use client'
 
 import { FormEvent, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Loader2, LockKeyhole, ShieldCheck } from 'lucide-react'
 
 export default function LoginPage() {
   const router = useRouter()
-  const search = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -19,8 +18,7 @@ export default function LoginPage() {
       const response = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.error?.message || 'Unable to sign in.')
-      router.replace(search.get('next') || '/')
-      router.refresh()
+      router.replace('/'); router.refresh()
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to sign in.') }
     finally { setBusy(false) }
   }
