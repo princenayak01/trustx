@@ -1,0 +1,5 @@
+import { ShieldCheck } from 'lucide-react'
+
+export default function AuthLayout({ title, subtitle, children }: { title:string; subtitle:string; children:React.ReactNode }) {
+  return <main className="flex min-h-screen items-center justify-center bg-[#07101d] px-5 py-10 text-slate-100"><div className="w-full max-w-md"><div className="mb-7 flex items-center gap-3"><div className="rounded-xl bg-cyan-500/10 p-2.5 text-cyan-400"><ShieldCheck size={24}/></div><div><b className="tracking-[.22em]">TRUST<span className="text-cyan-400">X</span></b><small className="block text-[9px] tracking-[.2em] text-slate-500">IDENTITY INTELLIGENCE</small></div></div><section className="rounded-2xl border border-slate-800 bg-[#0b1726] p-7 shadow-2xl shadow-cyan-950/20"><h1 className="text-2xl font-semibold">{title}</h1><p className="mt-1.5 mb-6 text-sm text-slate-500">{subtitle}</p>{children}</section><p className="mt-5 text-center text-[10px] leading-5 text-slate-600">TrustX provides AI-assisted fraud-risk assessment. Use synthetic or authorized documents only.</p></div></main>
+}
