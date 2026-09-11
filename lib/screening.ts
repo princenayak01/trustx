@@ -13,20 +13,25 @@ export function validateUpload(file: File) {
   if (file.size <= 0 || file.size > MAX_SCREENING_FILE_SIZE) throw new Error('File must be between 1 byte and 10 MB.')
 }
 
-export function buildDemoAnalysis(seed = 0) {
-  const normalized = Math.abs(seed) % 100
+/**
+ * Safe fallback used when the optional Python AI service is unavailable.
+ * It must NOT randomly label an uploaded document as fraudulent: a hash is
+ * not evidence of tampering. The fallback therefore represents a clean,
+ * low-risk synthetic baseline until real analysis is available.
+ */
+export function buildDemoAnalysis(_seed = 0) {
   const input: RiskInput = {
-    tamperingProbability: normalized > 70 ? 0.72 : normalized > 45 ? 0.28 : 0.06,
-    compressionAnomaly: normalized > 60 ? 0.48 : 0.12,
-    copyMoveProbability: normalized > 75 ? 0.64 : 0.08,
-    noiseInconsistency: normalized > 55 ? 0.32 : 0.07,
-    metadataAnomaly: normalized > 65 ? 0.44 : 0.05,
-    ocrConfidence: normalized > 80 ? 0.71 : 0.95,
-    formatScore: normalized > 70 ? 64 : 96,
-    structureScore: normalized > 70 ? 58 : 94,
-    fieldConsistencyScore: normalized > 60 ? 63 : 96,
-    qrConsistencyScore: normalized > 75 ? 55 : 93,
-    dateConsistencyScore: normalized > 65 ? 70 : 97,
+    tamperingProbability: 0.02,
+    compressionAnomaly: 0.08,
+    copyMoveProbability: 0.04,
+    noiseInconsistency: 0.06,
+    metadataAnomaly: 0.05,
+    ocrConfidence: 0.96,
+    formatScore: 94,
+    structureScore: 92,
+    fieldConsistencyScore: 94,
+    qrConsistencyScore: 91,
+    dateConsistencyScore: 96,
   }
   return calculateRisk(input)
 }
