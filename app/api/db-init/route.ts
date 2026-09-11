@@ -6,21 +6,22 @@ export const runtime = 'nodejs'
 
 /**
  * One-time/demo database bootstrap for hosted PostgreSQL instances.
- * This intentionally creates only the TrustX tables required by the MVP.
+ * TrustX keeps its demo owner identity in an isolated table because an
+ * existing authentication provider may already own the `users` table.
  * Production deployments should use formal Drizzle migrations instead.
  */
 export async function POST() {
   try {
     await db.execute(sql`create extension if not exists pgcrypto`)
-    await db.execute(sql`do $$ begin create type role as enum ('ADMIN','ANALYST','REVIEWER','USER'); exception when duplicate_object then null; end $$`)
     await db.execute(sql`do $$ begin create type screening_status as enum ('QUEUED','PROCESSING','COMPLETED','FAILED','MANUAL_REVIEW'); exception when duplicate_object then null; end $$`)
     await db.execute(sql`do $$ begin create type risk_level as enum ('LOW','MEDIUM','HIGH','CRITICAL'); exception when duplicate_object then null; end $$`)
 
-    await db.execute(sql`create table if not exists users (
-      id uuid primary key default gen_random_uuid(), full_name varchar(160) not null,
-      email varchar(320) not null unique, password_hash text not null,
-      role role not null default 'USER', is_active boolean not null default true,
-      last_login_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+    await db.execute(sql`create table if not exists trustx_demo_users (
+      id uuid primary key default gen_random_uuid(),
+      email varchar(320) not null unique,
+      full_name varchar(160) not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
     )`)
     await db.execute(sql`create table if not exists documents (
       id uuid primary key default gen_random_uuid(), owner_id uuid not null,
@@ -72,13 +73,26 @@ export async function POST() {
       expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz not null default now()
     )`)
 
-    const [user] = await db.execute(sql`insert into users (full_name,email,password_hash,role,is_active)
-      values ('TrustX Demo User','demo@trustx.local','demo-account-not-for-authentication','ADMIN',true)
-      on conflict (email) do update set is_active=true, updated_at=now()
-      returning id`)
+    const result = await db.execute(sql`
+      insert into trustx_demo_users (email, full_name)
+      values ('demo@trustx.local', 'TrustX Demo User')
+      on conflict (email) do update set updated_at = now()
+      returning id
+    `)
+    const user = result.rows[0] as { id?: string } | undefined
 
-    return NextResponse.json({ success: true, data: { demoUserId: (user as { id: string }).id }, message: 'TrustX database initialized.' })
+    return NextResponse.json({
+      success: true,
+      data: { demoUserId: user?.id },
+      message: 'TrustX database initialized.',
+    })
   } catch (error) {
-    return NextResponse.json({ success: false, error: { code: 'DB_INIT_FAILED', message: error instanceof Error ? error.message : 'Database initialization failed.' } }, { status: 500 })
+    return NextResponse.json({
+      success: false,
+      error: {
+        code: 'DB_INIT_FAILED',
+        message: error instanceof Error ? error.message : 'Database initialization failed.',
+      },
+    }, { status: 500 })
   }
 }
