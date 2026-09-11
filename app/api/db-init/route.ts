@@ -73,6 +73,37 @@ export async function POST() {
       expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz not null default now()
     )`)
 
+    // The database may already contain foreign keys from an older schema that
+    // point these UUID columns at an incompatible authentication `users` table.
+    // TrustX demo identities live in trustx_demo_users, so those legacy FKs must
+    // not block valid TrustX screening writes.
+    await db.execute(sql`
+      do $$
+      declare
+        constraint_record record;
+      begin
+        for constraint_record in
+          select tc.table_name, tc.constraint_name
+          from information_schema.table_constraints tc
+          join information_schema.key_column_usage kcu
+            on tc.constraint_name = kcu.constraint_name
+           and tc.table_schema = kcu.table_schema
+           and tc.table_name = kcu.table_name
+          where tc.constraint_type = 'FOREIGN KEY'
+            and tc.table_schema = current_schema()
+            and (
+              (tc.table_name = 'documents' and kcu.column_name = 'owner_id')
+              or (tc.table_name = 'screenings' and kcu.column_name = 'requested_by')
+              or (tc.table_name = 'reviews' and kcu.column_name = 'reviewer_id')
+              or (tc.table_name = 'audit_logs' and kcu.column_name = 'user_id')
+              or (tc.table_name = 'refresh_tokens' and kcu.column_name = 'user_id')
+            )
+        loop
+          execute format('alter table %I drop constraint if exists %I', constraint_record.table_name, constraint_record.constraint_name);
+        end loop;
+      end $$
+    `)
+
     const result = await db.execute(sql`
       insert into trustx_demo_users (email, full_name)
       values ('demo@trustx.local', 'TrustX Demo User')
