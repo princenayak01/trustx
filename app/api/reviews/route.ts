@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { auditLogs, reviews, screenings } from '@/lib/db/schema'
-
-const DEMO_REVIEWER_ID = '00000000-0000-0000-0000-000000000001'
+import { ensureDemoUser } from '@/lib/demo-user'
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,7 +10,6 @@ export async function POST(request: NextRequest) {
     const screeningId = String(body.screeningId || '')
     const decision = String(body.decision || '').toUpperCase()
     const notes = body.notes ? String(body.notes).slice(0, 4000) : null
-    const reviewerId = /^[0-9a-f-]{36}$/i.test(String(body.reviewerId || '')) ? String(body.reviewerId) : DEMO_REVIEWER_ID
 
     if (!/^[0-9a-f-]{36}$/i.test(screeningId)) return NextResponse.json({ success: false, error: { code: 'INVALID_SCREENING', message: 'A valid screeningId is required.' } }, { status: 400 })
     if (!['APPROVE', 'REJECT', 'ESCALATE', 'REQUEST_REVERIFICATION'].includes(decision)) return NextResponse.json({ success: false, error: { code: 'INVALID_DECISION', message: 'Unsupported review decision.' } }, { status: 400 })
@@ -19,6 +17,8 @@ export async function POST(request: NextRequest) {
     const [screening] = await db.select().from(screenings).where(eq(screenings.id, screeningId)).limit(1)
     if (!screening) return NextResponse.json({ success: false, error: { code: 'NOT_FOUND', message: 'Screening not found.' } }, { status: 404 })
 
+    // Always use a real user row so review/audit foreign keys cannot receive a placeholder UUID.
+    const reviewerId = await ensureDemoUser()
     const priority = screening.riskLevel === 'CRITICAL' ? 'CRITICAL' : screening.riskLevel === 'HIGH' ? 'HIGH' : 'NORMAL'
     const [review] = await db.insert(reviews).values({ screeningId, reviewerId, decision, priority, notes }).returning()
     const nextStatus = decision === 'ESCALATE' || decision === 'REQUEST_REVERIFICATION' ? 'MANUAL_REVIEW' : 'COMPLETED'
