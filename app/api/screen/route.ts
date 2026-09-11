@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { auditLogs, documents, forensicResults, ocrResults, riskFactors, screenings, validationResults } from '@/lib/db/schema'
 import { requireUser } from '@/lib/auth'
@@ -7,6 +8,45 @@ import { calculateRisk } from '@/lib/risk-engine'
 import { buildDemoAnalysis, sha256, validateUpload } from '@/lib/screening'
 
 export const runtime = 'nodejs'
+
+/**
+ * Hosted PostgreSQL databases can retain a legacy FK such as
+ * documents.owner_id -> users.id from an older auth schema. TrustX auth now
+ * uses trustx_auth_users, so that legacy FK makes an otherwise valid upload
+ * fail with a misleading Drizzle "Failed query" message. Remove only those
+ * legacy FKs; do not remove unrelated constraints.
+ */
+async function ensureScreeningStorageCompatibility() {
+  await db.execute(sql`
+    do $$
+    declare r record;
+    begin
+      for r in
+        select distinct
+          n.nspname as schema_name,
+          c.relname as table_name,
+          con.conname as constraint_name
+        from pg_constraint con
+        join pg_class c on c.oid = con.conrelid
+        join pg_namespace n on n.oid = c.relnamespace
+        join pg_class parent on parent.oid = con.confrelid
+        join pg_namespace parent_ns on parent_ns.oid = parent.relnamespace
+        join unnest(con.conkey) as k(attnum) on true
+        join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
+        where con.contype = 'f'
+          and n.nspname not in ('pg_catalog', 'information_schema')
+          and c.relname in ('documents', 'screenings', 'reviews', 'audit_logs', 'refresh_tokens')
+          and a.attname in ('owner_id', 'requested_by', 'reviewer_id', 'user_id')
+          and parent.relname in ('users', 'trustx_demo_users')
+      loop
+        execute format(
+          'alter table %I.%I drop constraint if exists %I',
+          r.schema_name, r.table_name, r.constraint_name
+        );
+      end loop;
+    end $$
+  `)
+}
 
 async function runAIService(input: { screeningId: string; filename: string; mimeType: string; bytes: Buffer }) {
   const url = process.env.AI_SERVICE_URL
@@ -28,6 +68,8 @@ async function runAIService(input: { screeningId: string; filename: string; mime
 export async function POST(request: NextRequest) {
   try {
     const user = await requireUser()
+    await ensureScreeningStorageCompatibility()
+
     const form = await request.formData()
     const file = form.get('file')
     if (!(file instanceof File)) return NextResponse.json({ success: false, error: { code: 'FILE_REQUIRED', message: 'A document file is required.' } }, { status: 400 })
@@ -70,8 +112,17 @@ export async function POST(request: NextRequest) {
     await db.insert(auditLogs).values({ userId:ownerId, action:'SCREENING_CREATED', resourceType:'SCREENING', resourceId:screening.id, metadata:{ documentHash:hash, mode:analysisMode } })
     return NextResponse.json({ success:true, data:{ document, screening:updated, analysis, mode:analysisMode }, message:'Document screened successfully.' }, { status:201 })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to process document.'
+    const err = error as { message?: string; code?: string; detail?: string; constraint?: string }
+    const message = err?.message || 'Unable to process document.'
     const status = message === 'Authentication required.' ? 401 : 400
-    return NextResponse.json({ success:false, error:{ code:status === 401 ? 'UNAUTHORIZED' : 'SCREENING_FAILED', message } }, { status })
+    // Keep the client message useful without exposing SQL text, connection
+    // strings, query parameters, or uploaded document contents.
+    const safeMessage = status === 401
+      ? message
+      : process.env.NODE_ENV === 'development'
+        ? `${message}${err.code ? ` [${err.code}]` : ''}${err.constraint ? ` (${err.constraint})` : ''}`
+        : 'Unable to process document. Please retry; if it persists, check the TrustX server logs.'
+    console.error('TrustX screening error:', { code: err.code, message: err.message, detail: err.detail, constraint: err.constraint })
+    return NextResponse.json({ success:false, error:{ code:status === 401 ? 'UNAUTHORIZED' : 'SCREENING_FAILED', message: safeMessage } }, { status })
   }
 }
