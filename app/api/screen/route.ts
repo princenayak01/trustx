@@ -1,51 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { eq } from 'drizzle-orm'
 import { db } from '@/lib/db'
-import { auditLogs, documents, forensicResults, ocrResults, riskFactors, screenings, users, validationResults } from '@/lib/db/schema'
+import { auditLogs, documents, forensicResults, ocrResults, riskFactors, screenings, validationResults } from '@/lib/db/schema'
+import { ensureDemoUser } from '@/lib/demo-user'
 import { calculateRisk } from '@/lib/risk-engine'
 import { buildDemoAnalysis, sha256, validateUpload } from '@/lib/screening'
 
 export const runtime = 'nodejs'
-const DEMO_OWNER_EMAIL = 'demo@trustx.local'
-
-// Resolve a valid PostgreSQL user without relying on a hard-coded UUID.
-// This prevents foreign-key failures when the production database generates
-// a different UUID for the demo user.
-async function ensureDemoOwner() {
-  const [existing] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, DEMO_OWNER_EMAIL))
-    .limit(1)
-
-  if (existing) return existing.id
-
-  try {
-    const [created] = await db
-      .insert(users)
-      .values({
-        fullName: 'TrustX Demo User',
-        email: DEMO_OWNER_EMAIL,
-        passwordHash: 'demo-account-not-for-authentication',
-        role: 'ADMIN',
-        isActive: true,
-      })
-      .returning({ id: users.id })
-
-    if (!created?.id) throw new Error('Unable to initialize the TrustX demo user.')
-    return created.id
-  } catch {
-    // Another request may have created the user concurrently.
-    const [raceSafe] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, DEMO_OWNER_EMAIL))
-      .limit(1)
-
-    if (!raceSafe) throw new Error('Unable to initialize the TrustX demo user.')
-    return raceSafe.id
-  }
-}
 
 async function runAIService(input: { screeningId: string; filename: string; mimeType: string; bytes: Buffer }) {
   const url = process.env.AI_SERVICE_URL
@@ -88,7 +49,8 @@ export async function POST(request: NextRequest) {
 
     validateUpload(file)
 
-    const ownerId = await ensureDemoOwner()
+    // PostgreSQL generates the real UUID. No placeholder owner UUID is used.
+    const ownerId = await ensureDemoUser()
     const documentType = String(form.get('documentType') || 'IDENTITY_DOCUMENT')
     const bytes = Buffer.from(await file.arrayBuffer())
     const hash = sha256(bytes)
