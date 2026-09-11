@@ -59,6 +59,15 @@ export function buildDemoAnalysis(seed = 0) {
   if (isTrustXAiDemoFixture) {
     return {
       ...analysis,
+      factors: [
+        {
+          type: 'AI_GENERATED_CONTENT',
+          severity: 'CRITICAL' as const,
+          score: 99,
+          description: 'Known TrustX synthetic demo fixture calibrated as AI-generated for testing.',
+        },
+        ...analysis.factors,
+      ],
       aiGenerated: {
         label: 'AI_GENERATED' as const,
         score: 99,
