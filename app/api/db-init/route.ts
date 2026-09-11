@@ -4,12 +4,7 @@ import { db } from '@/lib/db'
 
 export const runtime = 'nodejs'
 
-/**
- * One-time/demo database bootstrap for hosted PostgreSQL instances.
- * TrustX keeps its demo owner identity in an isolated table because an
- * existing authentication provider may already own the `users` table.
- * Production deployments should use formal Drizzle migrations instead.
- */
+/** One-time demo bootstrap. Run once after deployment, then remove/protect this route. */
 export async function POST() {
   try {
     await db.execute(sql`create extension if not exists pgcrypto`)
@@ -17,12 +12,31 @@ export async function POST() {
     await db.execute(sql`do $$ begin create type risk_level as enum ('LOW','MEDIUM','HIGH','CRITICAL'); exception when duplicate_object then null; end $$`)
 
     await db.execute(sql`create table if not exists trustx_demo_users (
-      id uuid primary key default gen_random_uuid(),
-      email varchar(320) not null unique,
-      full_name varchar(160) not null,
-      created_at timestamptz not null default now(),
+      id uuid primary key default gen_random_uuid(), email varchar(320) not null unique,
+      full_name varchar(160) not null, created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
     )`)
+
+    // Remove legacy foreign keys pointing at an existing auth/users table.
+    // TrustX demo IDs live in trustx_demo_users, so those old constraints would
+    // reject otherwise valid screening inserts.
+    await db.execute(sql`do $$
+      declare r record;
+      begin
+        for r in
+          select n.nspname as schema_name, c.relname as table_name, con.conname as constraint_name
+          from pg_constraint con
+          join pg_class c on c.oid = con.conrelid
+          join pg_namespace n on n.oid = c.relnamespace
+          join pg_class parent on parent.oid = con.confrelid
+          where con.contype = 'f'
+            and parent.relname = 'users'
+            and c.relname in ('documents','screenings','reviews','audit_logs','refresh_tokens')
+        loop
+          execute format('alter table %I.%I drop constraint if exists %I', r.schema_name, r.table_name, r.constraint_name);
+        end loop;
+      end $$`)
+
     await db.execute(sql`create table if not exists documents (
       id uuid primary key default gen_random_uuid(), owner_id uuid not null,
       original_filename varchar(255) not null, stored_filename varchar(255) not null,
@@ -73,37 +87,6 @@ export async function POST() {
       expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz not null default now()
     )`)
 
-    // The database may already contain foreign keys from an older schema that
-    // point these UUID columns at an incompatible authentication `users` table.
-    // TrustX demo identities live in trustx_demo_users, so those legacy FKs must
-    // not block valid TrustX screening writes.
-    await db.execute(sql`
-      do $$
-      declare
-        constraint_record record;
-      begin
-        for constraint_record in
-          select tc.table_name, tc.constraint_name
-          from information_schema.table_constraints tc
-          join information_schema.key_column_usage kcu
-            on tc.constraint_name = kcu.constraint_name
-           and tc.table_schema = kcu.table_schema
-           and tc.table_name = kcu.table_name
-          where tc.constraint_type = 'FOREIGN KEY'
-            and tc.table_schema = current_schema()
-            and (
-              (tc.table_name = 'documents' and kcu.column_name = 'owner_id')
-              or (tc.table_name = 'screenings' and kcu.column_name = 'requested_by')
-              or (tc.table_name = 'reviews' and kcu.column_name = 'reviewer_id')
-              or (tc.table_name = 'audit_logs' and kcu.column_name = 'user_id')
-              or (tc.table_name = 'refresh_tokens' and kcu.column_name = 'user_id')
-            )
-        loop
-          execute format('alter table %I drop constraint if exists %I', constraint_record.table_name, constraint_record.constraint_name);
-        end loop;
-      end $$
-    `)
-
     const result = await db.execute(sql`
       insert into trustx_demo_users (email, full_name)
       values ('demo@trustx.local', 'TrustX Demo User')
@@ -112,18 +95,11 @@ export async function POST() {
     `)
     const user = result.rows[0] as { id?: string } | undefined
 
-    return NextResponse.json({
-      success: true,
-      data: { demoUserId: user?.id },
-      message: 'TrustX database initialized.',
-    })
+    return NextResponse.json({ success: true, data: { demoUserId: user?.id }, message: 'TrustX database initialized.' })
   } catch (error) {
     return NextResponse.json({
       success: false,
-      error: {
-        code: 'DB_INIT_FAILED',
-        message: error instanceof Error ? error.message : 'Database initialization failed.',
-      },
+      error: { code: 'DB_INIT_FAILED', message: error instanceof Error ? error.message : 'Database initialization failed.' },
     }, { status: 500 })
   }
 }
