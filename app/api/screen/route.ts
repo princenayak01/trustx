@@ -28,7 +28,7 @@ async function ensureDemoOwner() {
     return created.id
   } catch {
     const [raceSafe] = await db.select({ id: users.id }).from(users).where(eq(users.email, DEMO_OWNER_EMAIL)).limit(1)
-    if (!raceSafe) throw new Error('Unable to initialize the TrustX demo user.')
+    if (!raceSafe) throw new Error('Unable to initialize the TrustX demo user. Check that the production users table exists and is up to date.')
     return raceSafe.id
   }
 }
@@ -57,6 +57,8 @@ export async function POST(request: NextRequest) {
     if (!(file instanceof File)) return NextResponse.json({ success: false, error: { code: 'FILE_REQUIRED', message: 'A document file is required.' } }, { status: 400 })
     validateUpload(file)
 
+    // Always resolve a real users.id before inserting documents.owner_id.
+    // This prevents PostgreSQL foreign-key failures caused by a placeholder owner UUID.
     const ownerId = await ensureDemoOwner()
     const documentType = String(form.get('documentType') || 'IDENTITY_DOCUMENT')
     const bytes = Buffer.from(await file.arrayBuffer())
@@ -64,7 +66,17 @@ export async function POST(request: NextRequest) {
     const storedFilename = `${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
     const storageKey = `private/${storedFilename}`
 
-    const [document] = await db.insert(documents).values({ ownerId, originalFilename: file.name.slice(0, 255), storedFilename, mimeType: file.type, fileSize: file.size, documentType: documentType.slice(0, 80), fileHash: hash, storageKey }).returning()
+    const [document] = await db.insert(documents).values({
+      ownerId,
+      originalFilename: file.name.slice(0, 255),
+      storedFilename,
+      mimeType: file.type,
+      fileSize: file.size,
+      documentType: documentType.slice(0, 80),
+      fileHash: hash,
+      storageKey,
+    }).returning()
+
     const [screening] = await db.insert(screenings).values({ documentId: document.id, requestedBy: ownerId, status: 'PROCESSING', processingStartedAt: new Date() }).returning()
 
     const ai = await runAIService({ screeningId: screening.id, filename: file.name, mimeType: file.type, bytes })
@@ -75,11 +87,26 @@ export async function POST(request: NextRequest) {
     let analysisMode = 'DEMO_FALLBACK'
 
     if (ai?.ocr && ai?.forensics && ai?.validation) {
-      ocrConfidence = Number(ai.ocr.confidence); forensic = ai.forensics; validation = ai.validation
-      analysis = calculateRisk({ tamperingProbability: Number(forensic.tampering_probability), compressionAnomaly: Number(forensic.compression_anomaly), copyMoveProbability: Number(forensic.copy_move_probability), noiseInconsistency: Number(forensic.noise_inconsistency), metadataAnomaly: Number(forensic.metadata_anomaly), ocrConfidence, formatScore: Number(validation.format_score), structureScore: Number(validation.structure_score), fieldConsistencyScore: Number(validation.field_consistency_score), qrConsistencyScore: Number(validation.qr_consistency_score), dateConsistencyScore: Number(validation.date_consistency_score) })
+      ocrConfidence = Number(ai.ocr.confidence)
+      forensic = ai.forensics
+      validation = ai.validation
+      analysis = calculateRisk({
+        tamperingProbability: Number(forensic.tampering_probability),
+        compressionAnomaly: Number(forensic.compression_anomaly),
+        copyMoveProbability: Number(forensic.copy_move_probability),
+        noiseInconsistency: Number(forensic.noise_inconsistency),
+        metadataAnomaly: Number(forensic.metadata_anomaly),
+        ocrConfidence,
+        formatScore: Number(validation.format_score),
+        structureScore: Number(validation.structure_score),
+        fieldConsistencyScore: Number(validation.field_consistency_score),
+        qrConsistencyScore: Number(validation.qr_consistency_score),
+        dateConsistencyScore: Number(validation.date_consistency_score),
+      })
       analysisMode = 'PYTHON_AI_SERVICE'
     } else {
-      analysis = buildDemoAnalysis(parseInt(hash.slice(0, 8), 16)); ocrConfidence = analysis.level === 'CRITICAL' ? 0.71 : analysis.level === 'HIGH' ? 0.84 : 0.96
+      analysis = buildDemoAnalysis(parseInt(hash.slice(0, 8), 16))
+      ocrConfidence = analysis.level === 'CRITICAL' ? 0.71 : analysis.level === 'HIGH' ? 0.84 : 0.96
       forensic = { tampering_probability: 0.02, compression_anomaly: 0.08, copy_move_probability: 0.04, noise_inconsistency: 0.06, metadata_anomaly: 0.05 }
       validation = { format_score: 94, structure_score: 92, field_consistency_score: 94, qr_consistency_score: 91, date_consistency_score: 96 }
     }
