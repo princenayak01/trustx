@@ -22,27 +22,28 @@ export async function ensureDemoUser() {
     )
   `)
 
-  // Hosted databases can contain foreign keys left over from an auth schema.
-  // Those constraints may point owner/reviewer IDs at an incompatible `users`
-  // table and reject otherwise valid TrustX demo UUIDs. Remove only FK
-  // constraints attached to TrustX identity columns; no user data is deleted.
+  // Hosted databases can contain legacy foreign keys from an auth schema.
+  // The demo identity lives in trustx_demo_users, so screening tables must not
+  // require that UUID to exist in an unrelated users table. Search every
+  // non-system schema instead of relying on current_schema(), because managed
+  // PostgreSQL providers can use a custom search_path.
   await db.execute(sql`
     do $$
     declare
       r record;
     begin
       for r in
-        select
+        select distinct
           n.nspname as schema_name,
           c.relname as table_name,
           con.conname as constraint_name
         from pg_constraint con
         join pg_class c on c.oid = con.conrelid
         join pg_namespace n on n.oid = c.relnamespace
-        join unnest(con.conkey) with ordinality as k(attnum, ord) on true
+        join unnest(con.conkey) as k(attnum) on true
         join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
         where con.contype = 'f'
-          and n.nspname = current_schema()
+          and n.nspname not in ('pg_catalog', 'information_schema')
           and c.relname in ('documents', 'screenings', 'reviews', 'audit_logs', 'refresh_tokens')
           and a.attname in ('owner_id', 'requested_by', 'reviewer_id', 'user_id')
       loop
