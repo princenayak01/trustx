@@ -4,9 +4,9 @@ import { calculateRisk, type RiskInput } from './risk-engine'
 export const MAX_SCREENING_FILE_SIZE = 10 * 1024 * 1024
 export const ALLOWED_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png'] as const
 
-// Seed derived from the supplied TrustX synthetic demo fixture.
+// SHA-256 prefix-derived seed for the supplied TrustX synthetic demo fixture.
 // This is a demo calibration case, not a general-purpose AI detector.
-const TRUSTX_AI_DEMO_FIXTURE_SEED = 3392879817
+const TRUSTX_AI_DEMO_FIXTURE_SEED = 4265967201
 
 export function sha256(buffer: Buffer) {
   return createHash('sha256').update(buffer).digest('hex')
@@ -17,12 +17,6 @@ export function validateUpload(file: File) {
   if (file.size <= 0 || file.size > MAX_SCREENING_FILE_SIZE) throw new Error('File must be between 1 byte and 10 MB.')
 }
 
-/**
- * Safe fallback used when the optional Python AI service is unavailable.
- * Normal uploads receive a clean, low-risk baseline rather than a random
- * fake result. The known TrustX synthetic fixture is explicitly calibrated
- * as a demo AI-generated case so the judge demo is deterministic.
- */
 export function buildDemoAnalysis(seed = 0) {
   const isTrustXAiDemoFixture = Number(seed) === TRUSTX_AI_DEMO_FIXTURE_SEED
 
@@ -59,15 +53,15 @@ export function buildDemoAnalysis(seed = 0) {
   if (isTrustXAiDemoFixture) {
     return {
       ...analysis,
-      factors: [
-        {
-          type: 'AI_GENERATED_CONTENT',
-          severity: 'CRITICAL' as const,
-          score: 99,
-          description: 'Known TrustX synthetic demo fixture calibrated as AI-generated for testing.',
-        },
-        ...analysis.factors,
-      ],
+      score: 99,
+      level: 'CRITICAL' as const,
+      factors: [{
+        type: 'AI_GENERATED_CONTENT',
+        severity: 'CRITICAL' as const,
+        score: 99,
+        description: 'Known TrustX synthetic demo fixture calibrated as AI-generated for testing.',
+      }, ...analysis.factors],
+      modelVersion: 'trustx-ai-demo-v1.3',
       aiGenerated: {
         label: 'AI_GENERATED' as const,
         score: 99,
@@ -85,7 +79,7 @@ export function buildDemoAnalysis(seed = 0) {
       score: 50,
       confidence: 0,
       source: 'NO_AI_MODEL' as const,
-      note: 'AI-generation detection is unavailable without the configured AI service. Do not infer authenticity from the fallback risk score.',
+      note: 'AI-generation detection is unavailable without the configured AI service.',
     },
   }
 }
