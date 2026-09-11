@@ -1,5 +1,6 @@
 'use client'
 
+import useSWR from 'swr'
 import { useState } from 'react'
 import {
   Activity,
@@ -70,13 +71,19 @@ function MetricCard({ label, value, change, icon: Icon, tone = 'blue' }: { label
   return <div className="metric-card"><div className={`metric-icon ${tone}`}><Icon size={17} /></div><div className="metric-label">{label}</div><div className="metric-value">{value}</div><div className="metric-change"><ArrowUpRight size={13} /> {change}</div></div>
 }
 
+const fetcher = (url: string) => fetch(url).then((response) => response.json())
+
+type DashboardStats = { total: number; low: number; medium: number; high: number; manual_reviews: number; average_score: number }
+
 function Overview({ setView }: { setView: (view: string) => void }) {
+  const { data: statsResponse } = useSWR<{ success: boolean; data?: DashboardStats }>('/api/dashboard/stats', fetcher, { refreshInterval: 30000 })
+  const stats = statsResponse?.data
   return <>
     <div className="page-heading"><div><div className="eyebrow">COMMAND CENTER / OVERVIEW</div><h1>Good morning, Alex</h1><p>Here&apos;s what&apos;s happening across your identity screening operations.</p></div><button className="button button-primary" onClick={() => setView('Screen document')}><UploadCloud size={16} /> Start screening</button></div>
     <div className="metric-grid">
-      <MetricCard label="Documents screened" value="1,284" change="12.8% vs last month" icon={Files} />
-      <MetricCard label="Average risk score" value="32.6" change="4.2% improvement" icon={Gauge} tone="cyan" />
-      <MetricCard label="Manual reviews" value="7" change="2 require attention" icon={ClipboardCheck} tone="amber" />
+<MetricCard label="Documents screened" value={stats ? stats.total.toLocaleString() : '—'} change="Live from PostgreSQL" icon={Files} />
+ <MetricCard label="Average risk score" value={stats ? stats.average_score.toFixed(1) : '—'} change="Live from PostgreSQL" icon={Gauge} tone="cyan" />
+ <MetricCard label="Manual reviews" value={stats ? stats.manual_reviews.toString() : '—'} change={stats ? `${stats.high} high-risk cases` : 'Loading database'} icon={ClipboardCheck} tone="amber" />
       <MetricCard label="Detection accuracy" value="98.4%" change="0.6% vs last month" icon={ShieldCheck} tone="green" />
     </div>
     <div className="content-grid">
